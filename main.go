@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/P-H-Pancholi/Chirpy/internal/database"
 	"github.com/joho/godotenv"
@@ -18,6 +19,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB             database.Queries
+	Platform       string
 }
 
 // wrapper function should return another function with logic intended included
@@ -42,9 +44,11 @@ func main() {
 		Handler: mux,
 	}
 
+	platform := os.Getenv("PLATFORM")
 	cfg := apiConfig{
 		fileserverHits: atomic.Int32{},
 		DB:             *dbQueries,
+		Platform:       platform,
 	}
 
 	cfg.fileserverHits.Store(0)
@@ -55,10 +59,43 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", cfg.NumRequestHandler)
 	mux.HandleFunc("POST /admin/reset", cfg.ResetHandler)
 	mux.HandleFunc("POST /api/validate_chirp", ValidateChirp)
+	mux.HandleFunc("POST  /api/users", cfg.CreateUserHandler)
 
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Println(err)
 	}
+}
+
+func (cfg *apiConfig) CreateUserHandler(res http.ResponseWriter, req *http.Request) {
+	UserEmail := struct {
+		Email string `json:"email"`
+	}{}
+	decoder := json.NewDecoder(req.Body)
+	if err := decoder.Decode(&UserEmail); err != nil {
+		respondWithError(res, 500, err.Error())
+	}
+	user, err := cfg.DB.CreateUser(req.Context(), UserEmail.Email)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+	}
+
+	JsonUser := struct {
+		ID        int32     `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	dat, err := json.Marshal(JsonUser)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+	}
+	res.WriteHeader(201)
+	res.Write(dat)
 }
 
 func HealthHandler(res http.ResponseWriter, req *http.Request) {
@@ -86,8 +123,16 @@ func (cfg *apiConfig) NumRequestHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (cfg *apiConfig) ResetHandler(w http.ResponseWriter, r *http.Request) {
+	if cfg.Platform != "dev" {
+		w.WriteHeader(403)
+		return
+	}
+	if err := cfg.DB.DeleteAllUsers(r.Context()); err != nil {
+		respondWithError(w, 500, err.Error())
+	}
 	w.WriteHeader(200)
 	cfg.fileserverHits.Store(0)
+
 }
 
 func ValidateChirp(w http.ResponseWriter, r *http.Request) {
