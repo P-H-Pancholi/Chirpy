@@ -11,10 +11,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/P-H-Pancholi/Chirpy/internal/auth"
 	"github.com/P-H-Pancholi/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+type JsonChirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
@@ -60,27 +70,179 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", cfg.ResetHandler)
 	mux.HandleFunc("POST /api/validate_chirp", ValidateChirp)
 	mux.HandleFunc("POST  /api/users", cfg.CreateUserHandler)
+	mux.HandleFunc("POST /api/chirps", cfg.ChirpHandler)
+	mux.HandleFunc("GET /api/chirps", cfg.GetAllChirpsHandler)
+	mux.HandleFunc("GET /api/chirps/{chirp_id}", cfg.GetChirpHandler)
+	mux.HandleFunc("POST  /api/login", cfg.LoginHandler)
 
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Println(err)
 	}
 }
 
+func (cfg *apiConfig) LoginHandler(res http.ResponseWriter, req *http.Request) {
+	ReqBody := struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}{}
+	defer req.Body.Close()
+	decoder := json.NewDecoder(req.Body)
+	if err := decoder.Decode(&ReqBody); err != nil {
+		respondWithError(res, 500, fmt.Sprintf("error in decoding json body : %v", err))
+		return
+	}
+	currUser, err := cfg.DB.GetUserByEmail(req.Context(), ReqBody.Email)
+	if err != nil {
+		respondWithError(res, 500, fmt.Sprintf("error in fetching user from DB : %v", err))
+		return
+	}
+	if err := auth.CheckPasswordHash(ReqBody.Password, currUser.HashedPassword); err != nil {
+		respondWithError(res, 401, "Incorrect email or password")
+		return
+	}
+	JsonUser := struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}{
+		ID:        currUser.ID,
+		CreatedAt: currUser.CreatedAt,
+		UpdatedAt: currUser.UpdatedAt,
+		Email:     currUser.Email,
+	}
+	dat, err := json.Marshal(JsonUser)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(200)
+	res.Write(dat)
+
+}
+
+func (cfg *apiConfig) GetChirpHandler(res http.ResponseWriter, req *http.Request) {
+	chirp, err := cfg.DB.GetChirpById(req.Context(), uuid.MustParse(req.PathValue("chirp_id")))
+	if err == sql.ErrNoRows {
+		res.WriteHeader(404)
+		return
+	}
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	chirpResBody := JsonChirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	dat, err := json.Marshal(chirpResBody)
+	if err != nil {
+		fmt.Println(err)
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(200)
+	res.Write(dat)
+
+}
+
+func (cfg *apiConfig) GetAllChirpsHandler(res http.ResponseWriter, req *http.Request) {
+	chirps, err := cfg.DB.GetAllChirps(req.Context())
+	if err != nil {
+		fmt.Println(err)
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	ChirpsResBody := []JsonChirp{}
+	for _, chirp := range chirps {
+		ChirpsResBody = append(ChirpsResBody, JsonChirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+	}
+	dat, err := json.Marshal(ChirpsResBody)
+	if err != nil {
+		fmt.Println(err)
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(200)
+	res.Write(dat)
+}
+
+func (cfg *apiConfig) ChirpHandler(res http.ResponseWriter, req *http.Request) {
+	ChirpReqBody := struct {
+		Body   string    `json:"body"`
+		UserId uuid.UUID `json:"user_id"`
+	}{}
+	decoder := json.NewDecoder(req.Body)
+	defer req.Body.Close()
+	if len(ChirpReqBody.Body) > 140 {
+		respondWithError(res, 400, "Chirp is too long")
+		return
+	}
+	if err := decoder.Decode(&ChirpReqBody); err != nil {
+		respondWithError(res, 500, err.Error())
+	}
+
+	Chirp, err := cfg.DB.CreateChirp(req.Context(), database.CreateChirpParams{
+		Body:   ChirpReqBody.Body,
+		UserID: ChirpReqBody.UserId,
+	})
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	ChirpResBody := JsonChirp{
+		ID:        Chirp.ID,
+		CreatedAt: Chirp.CreatedAt,
+		UpdatedAt: Chirp.UpdatedAt,
+		Body:      Chirp.Body,
+		UserID:    Chirp.UserID,
+	}
+
+	dat, err := json.Marshal(ChirpResBody)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(201)
+	res.Write(dat)
+}
+
 func (cfg *apiConfig) CreateUserHandler(res http.ResponseWriter, req *http.Request) {
 	UserEmail := struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}{}
 	decoder := json.NewDecoder(req.Body)
 	if err := decoder.Decode(&UserEmail); err != nil {
 		respondWithError(res, 500, err.Error())
+		return
 	}
-	user, err := cfg.DB.CreateUser(req.Context(), UserEmail.Email)
+	hashed_password, err := auth.HashPassword(UserEmail.Password)
+	if err != nil {
+		respondWithError(res, 500, fmt.Sprintf("error in Hashing password: %v", err))
+	}
+
+	user, err := cfg.DB.CreateUser(req.Context(), database.CreateUserParams{
+		Email:          UserEmail.Email,
+		HashedPassword: hashed_password,
+	})
+
 	if err != nil {
 		respondWithError(res, 500, err.Error())
+		return
 	}
 
 	JsonUser := struct {
-		ID        int32     `json:"id"`
+		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
@@ -93,6 +255,7 @@ func (cfg *apiConfig) CreateUserHandler(res http.ResponseWriter, req *http.Reque
 	dat, err := json.Marshal(JsonUser)
 	if err != nil {
 		respondWithError(res, 500, err.Error())
+		return
 	}
 	res.WriteHeader(201)
 	res.Write(dat)
@@ -129,6 +292,7 @@ func (cfg *apiConfig) ResetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := cfg.DB.DeleteAllUsers(r.Context()); err != nil {
 		respondWithError(w, 500, err.Error())
+		return
 	}
 	w.WriteHeader(200)
 	cfg.fileserverHits.Store(0)
