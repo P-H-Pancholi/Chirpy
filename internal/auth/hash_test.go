@@ -43,7 +43,7 @@ func TestJWTSuccess(t *testing.T) {
 	userId := uuid.New()
 	secret := "testingSecret"
 
-	token, err := MakeJWT(userId, secret, time.Duration(time.Minute*10))
+	token, err := MakeJWT(userId, secret)
 	if assert.NoError(t, err) {
 		assert.NotEmpty(t, token)
 	}
@@ -57,7 +57,7 @@ func TestJWTExpiry(t *testing.T) {
 	userId := uuid.New()
 	secret := "testingSecret"
 
-	token, err := MakeJWT(userId, secret, time.Duration(time.Millisecond*10))
+	token, err := MakeJWT(userId, secret)
 	if assert.NoError(t, err) {
 		assert.NotEmpty(t, token)
 	}
@@ -72,7 +72,7 @@ func TestIncorrectToken(t *testing.T) {
 	userId := uuid.New()
 	secret := "testingSecret"
 
-	token, err := MakeJWT(userId, secret, time.Duration(time.Millisecond*10))
+	token, err := MakeJWT(userId, secret)
 	if assert.NoError(t, err) {
 		assert.NotEmpty(t, token)
 	}

@@ -1,7 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -21,11 +26,11 @@ func CheckPasswordHash(password, hash string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
 	claims := jwt.RegisteredClaims{
 		Issuer:    "chirpy",
 		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(expiresIn)),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Hour)),
 		Subject:   userID.String(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -60,5 +65,21 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return userID, nil
 	}
 
+	fmt.Println(tokenString)
 	return uuid.UUID{}, errors.New("invalid token")
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	token := headers.Get("Authorization")
+	if token == "" {
+		return "", errors.New("token not provided")
+	}
+	token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer"))
+	return token, nil
+}
+
+func MakeRefreshToken() (string, error) {
+	key := make([]byte, 32)
+	rand.Read(key)
+	return hex.EncodeToString(key), nil
 }
