@@ -78,10 +78,136 @@ func main() {
 	mux.HandleFunc("POST  /api/login", cfg.LoginHandler)
 	mux.HandleFunc("POST /api/refresh", cfg.RefreshHandler)
 	mux.HandleFunc("POST /api/revoke", cfg.RevokeHandler)
+	mux.HandleFunc("PUT /api/users", cfg.UpdateUserHandler)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.DeleteChirpHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.PolkaWebhookHandler)
 
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Println(err)
 	}
+}
+
+func (cfg *apiConfig) PolkaWebhookHandler(res http.ResponseWriter, req *http.Request) {
+	ReqBody := struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserId uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}{}
+	decoder := json.NewDecoder(req.Body)
+	defer req.Body.Close()
+	if err := decoder.Decode(&ReqBody); err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	if ReqBody.Event != "user.upgraded" {
+		res.WriteHeader(204)
+		return
+	}
+	result, err := cfg.DB.MarkUserRed(req.Context(), ReqBody.Data.UserId)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	if rowsAffected == 0 {
+		res.WriteHeader(404)
+		return
+	}
+	res.WriteHeader(204)
+}
+
+func (cfg *apiConfig) DeleteChirpHandler(res http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(res, 401, err.Error())
+		return
+	}
+	userId, err := auth.ValidateJWT(token, cfg.JwtToken)
+	if err != nil {
+		respondWithError(res, 401, err.Error())
+		return
+	}
+	if err := uuid.Validate(req.PathValue("chirpID")); err != nil {
+		res.WriteHeader(403)
+		return
+	}
+	chirp, err := cfg.DB.GetChirpById(req.Context(), uuid.MustParse(req.PathValue("chirpID")))
+	if err == sql.ErrNoRows {
+		res.WriteHeader(403)
+		return
+	}
+	if userId != chirp.UserID {
+		res.WriteHeader(403)
+		return
+	}
+	if err := cfg.DB.DeleteChirpById(req.Context(), chirp.ID); err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(204)
+}
+
+func (cfg *apiConfig) UpdateUserHandler(res http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(res, 401, err.Error())
+		return
+	}
+	userId, err := auth.ValidateJWT(token, cfg.JwtToken)
+	if err != nil {
+		respondWithError(res, 401, err.Error())
+		return
+	}
+	ReqBody := struct {
+		Email          string `json:"email"`
+		HashedPassword string `json:"password"`
+	}{}
+	decoder := json.NewDecoder(req.Body)
+	defer req.Body.Close()
+	if err := decoder.Decode(&ReqBody); err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	hashed_pass, err := auth.HashPassword(ReqBody.HashedPassword)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	User, err := cfg.DB.UpdateUserById(req.Context(), database.UpdateUserByIdParams{
+		UpdatedAt:      time.Now().UTC(),
+		Email:          ReqBody.Email,
+		HashedPassword: hashed_pass,
+		ID:             userId,
+	})
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	JsonUser := struct {
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
+	}{
+		ID:          User.ID,
+		CreatedAt:   User.CreatedAt,
+		UpdatedAt:   User.UpdatedAt,
+		Email:       User.Email,
+		IsChirpyRed: User.IsChirpyRed,
+	}
+	dat, err := json.Marshal(JsonUser)
+	if err != nil {
+		respondWithError(res, 500, err.Error())
+		return
+	}
+	res.WriteHeader(200)
+	res.Write(dat)
 }
 
 func (cfg *apiConfig) RevokeHandler(res http.ResponseWriter, req *http.Request) {
@@ -192,6 +318,7 @@ func (cfg *apiConfig) LoginHandler(res http.ResponseWriter, req *http.Request) {
 		Email        string    `json:"email"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 	}{
 		ID:           currUser.ID,
 		CreatedAt:    currUser.CreatedAt,
@@ -199,6 +326,7 @@ func (cfg *apiConfig) LoginHandler(res http.ResponseWriter, req *http.Request) {
 		Email:        currUser.Email,
 		Token:        token,
 		RefreshToken: Rt.Token,
+		IsChirpyRed:  currUser.IsChirpyRed,
 	}
 	dat, err := json.Marshal(JsonUser)
 	if err != nil {
@@ -343,15 +471,17 @@ func (cfg *apiConfig) CreateUserHandler(res http.ResponseWriter, req *http.Reque
 	}
 
 	JsonUser := struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(JsonUser)
 	if err != nil {
