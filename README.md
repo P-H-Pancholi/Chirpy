@@ -13,7 +13,6 @@ Chirpy is a simple yet powerful platform for sharing short posts called "chirps"
     -   [Chirp Endpoints](#chirp-endpoints)
     -   [Webhook Endpoints](#webhook-endpoints)
 5.  [Contributing](#contributing)
-6.  [License](#license)
 
 ## Features
 
